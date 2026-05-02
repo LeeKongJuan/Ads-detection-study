@@ -4,6 +4,8 @@ library(corrplot)
 library(dplyr)
 library(glmnet)
 library(caret)
+library(pROC)
+library(randomForest)
 #----------------------------------------------------------
 # TIỀN XỬ LÝ DỮ LIỆU
 #----------------------------------------------------------
@@ -153,7 +155,6 @@ draw_histograms_and_boxplots <- function(data) {
 #----------------------------------------------------------
 # Lấy các giá trị outliers cho các cột Height, Width và Ratio
 get_all_outliers <- function(data) {
-    cat("--- Thống kê ngoại lai (Outliers) ---\n")
     calc_outlier <- function(x) {
         if(!is.numeric(x)) return(c(0, 0))
         Q1 <- quantile(x, 0.25, na.rm = TRUE)
@@ -338,199 +339,146 @@ draw_correlation_matrix <- function(data) {
 }
 
 #----------------------------------------------------------
-# THỐNG KÊ SUY DIỄN
+# CÁC HÀM MÔ HÌNH VÀ THỐNG KÊ SUY DIỄN
 #----------------------------------------------------------
 # 5.1 Kiểm định trung bình 2 mẫu
 #----------------------------------------------------------
-analysis_data <- na_replace(analysis_data)
-analysis_data <- get_unique_dataset(analysis_data)
+# Kiểm định trung bình 2 mẫu (t-test và Wilcoxon test) cho biến Width theo Class
+draw_qq_plot <- function(data) {
+    cat("\n--- 5.1 Kiểm định trung bình 2 mẫu (Width theo Class) ---\n")
+    
+    # Shapiro-Wilk & QQ Plot
+    shapiro_df <- data %>%
+        group_by(Class) %>%
+        summarise(p_value = shapiro.test(sample(Width, min(500, n())))$p.value)
+    
+    p_qq <- ggplot(data, aes(sample = Width)) +
+        stat_qq() + stat_qq_line() +
+        facet_wrap(~Class) + theme_minimal() +
+        labs(title = "QQ Plot of Width by Class") +
+        geom_text(data = shapiro_df,
+                aes(x = Inf, y = -Inf, label = paste0("Shapiro p-value = ", round(p_value, 4))),
+                hjust = 1.1, vjust = -0.5, inherit.aes = FALSE)
+    print(p_qq)
+}
 
-# tính p-value cho từng nhóm
-shapiro_df <- analysis_data %>%
-  group_by(Class) %>%
-  summarise(p_value = shapiro.test(sample(Width, min(500, n())))$p.value)
+t_test <- function(data) {
+    cat("\nKết quả T-test:")
+    print(t.test(Width ~ Class, data = data))
+}
 
-# QQ plot + annotate
-ggplot(analysis_data, aes(sample = Width)) +
-  stat_qq() +
-  stat_qq_line() +
-  facet_wrap(~Class) +
-  theme_minimal() +
-  labs(title = "QQ Plot of Width by Class") +
-  geom_text(data = shapiro_df,
-            aes(x = Inf, y = -Inf,
-                label = paste0("Shapiro p-value = ", (p_value))),
-            hjust = 1.1, vjust = -0.5,
-            inherit.aes = FALSE)
+wilcox_test <- function(data) {
+    cat("\nKết quả Wilcoxon test:")
+    print(wilcox.test(Width ~ Class, data = data))
+}
 
-#---------------------------------------------------------
-t.test(Width ~ Class, data = analysis_data)
+perform_mean_tests <- function(data) {
+    t_test(data)
+    wilcox_test(data)
+}
 
-#---------------------------------------------------------
-wilcox_result <- wilcox.test(Width ~ Class, data = analysis_data)
-wilcox_result
-
-#---------------------------------------------------------
+#----------------------------------------------------------
 # 5.2 Kiểm định tỉ lệ 2 mẫu
-#---------------------------------------------------------
+#----------------------------------------------------------
+# Kiểm định tỉ lệ 2 mẫu (prop.test) cho biến Local theo Class
+perform_proportion_test <- function(data) {
+    cat("--- 5.2 Kiểm định tỉ lệ 2 mẫu ---\n")
+    tab <- table(data$Class, data$Local)
+    
+    success <- c(tab["1","1"], tab["0","1"])
+    n <- c(sum(tab["1",]), sum(tab["0",]))
+    p_hat <- success / n
+    
+    check_df <- data.frame(
+        Group = c("ad", "nonad"), n = n, p_hat = round(p_hat, 4),
+        n_p = n * p_hat, n_1_p = n * (1 - p_hat)
+    )
+    
+    print("Bảng kiểm tra điều kiện:")
+    print(check_df)
+    
+    cat("Kết quả Prop test:")
+    print(prop.test(success, n, alternative = "greater"))
+}
 
-#---------------------------------------------------------
-# số thành công (local = 1)
-success <- c(tab["1","1"], tab["0","1"])
+#----------------------------------------------------------
+# 5.3 Hồi quy logistic kết hợp lasso
+#----------------------------------------------------------
+# Hồi quy logistic kết hợp lasso để dự đoán Class dựa trên Height, Width và Local
+run_lasso_logistic <- function(data, seed = 99) {
+    cat("\n--- 5.3 Hồi quy logistic kết hợp Lasso ---\n")
+    # Chuẩn bị dữ liệu cho mô hình Lasso Logistic Regression
+    set.seed(seed)
+    train_index <- createDataPartition(data$Class, p = 0.7, list = FALSE)
+    train_data <- data[train_index, ]
+    test_data  <- data[-train_index, ]
+    cat("Số lượng quan sát của tập Train:", nrow(train_data), "quan sát\n")
+    cat("Số lượng quan sát của tập Test:", nrow(test_data), "quan sát\n")
+    print(table(train_data$Class))
 
-# tổng mẫu
-n <- c(sum(tab["1",]), sum(tab["0",]))
-
-# tỷ lệ
-p_hat <- success / n
-
-# kiểm tra điều kiện
-check_df <- data.frame(
-  Group = c("ad", "nonad"),
-  n = n,
-  p_hat = p_hat,
-  n_p = n * p_hat,
-  n_1_p = n * (1 - p_hat)
-)
-
-check_df
-
-
-# bảng tần số
-tab <- table(analysis_data$Class, analysis_data$Local)
-
-# prop test
-
-prop.test(success, n, alternative = "greater")
-
-
-#---------------------------------------------------------
-# Hồi quy logistic kết hợp lasso
-#---------------------------------------------------------
-# tạo train/test (70-30)
-set.seed(99)
-train_index <- createDataPartition(analysis_data$Class, p = 0.7, list = FALSE)
-
-train_data <- analysis_data[train_index, ]
-test_data  <- analysis_data[-train_index, ]
-
-# in ra số lượng quan sát của các tập
-cat("Số lượng quan sát của tập Train:", nrow(train_data), "quan sát\n")
-cat("Số lượng quan sát của tập Test:", nrow(test_data), "quan sát\n")
-
-# đếm số lượng
-table(train_data$Class)
-
-# tạo weight
-weights <- ifelse(train_data$Class == "1",
-                  1 / sum(train_data$Class == "1"),
-                  1 / sum(train_data$Class == "0"))
-
-# bỏ biến mục tiêu
-x_train <- model.matrix(Class ~ .-1, data = train_data)
-y_train <- train_data$Class
-
-x_test <- model.matrix(Class ~ .-1, data = test_data)
-y_test <- test_data$Class
-
-set.seed(99)
-
-cv_model <- cv.glmnet(
-  x_train,
-  y_train,
-  family = "binomial",
-  alpha = 1,  # Lasso
-  weights = weights
-)
-
-cv_model$lambda.min
-cv_model$lambda.1se
-
-best_lambda <- cv_model$lambda.min
-best_lambda
-
-coef_lasso <- coef(cv_model, s = "lambda.min")
-
-# chuyển sang dạng dễ nhìn
-coef_df <- as.matrix(coef_lasso)
-
-# lọc biến có hệ số khác 0
-selected_features <- coef_df[coef_df != 0, , drop = FALSE]
-
-selected_features
-
-length(selected_features) - 1  # trừ intercept
-
-prob_pred <- predict(cv_model, s = "lambda.min", newx = x_test, type = "response")
-
-# chuyển về class
-class_pred <- ifelse(prob_pred > 0.5, "1", "0")
-class_pred <- as.factor(class_pred)
-
-confusionMatrix(class_pred, y_test)
-
-library(pROC)
-
-# chuyển y_test về numeric (0/1)
-y_test_num <- as.numeric(as.character(y_test))
-
-# tạo ROC object
-roc_obj <- roc(y_test_num, as.vector(prob_pred))
-
-# AUC
-auc_value <- auc(roc_obj)
-auc_value
-
-# vẽ ROC
-plot(roc_obj, 
-     main = "ROC Curve - Lasso Logistic Regression",
-     col = "blue", 
-     lwd = 2)
-
-# thêm đường random (baseline)
-abline(a = 0, b = 1, lty = 2, col = "gray")
-
-#---------------------------------------------------------
+    weights <- ifelse(train_data$Class == "1",
+                        1 / sum(train_data$Class == "1"),
+                        1 / sum(train_data$Class == "0"))
+    
+    x_train <- model.matrix(Class ~ .-1, data = train_data)
+    y_train <- train_data$Class
+    x_test <- model.matrix(Class ~ .-1, data = test_data)
+    y_test <- test_data$Class
+    
+    # Sử dụng cv.glmnet để tìm lambda tối ưu với trọng số cho lớp không cân bằng
+    set.seed(seed)
+    cv_model <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 1, weights = weights)
+    
+    coef_lasso <- coef(cv_model, s = "lambda.min")
+    coef_df <- as.matrix(coef_lasso)
+    selected_features <- coef_df[coef_df != 0, , drop = FALSE]
+    
+    prob_pred <- predict(cv_model, s = "lambda.min", newx = x_test, type = "response")
+    class_pred <- as.factor(ifelse(prob_pred > 0.5, "1", "0"))
+    
+    cat("Lambda min:", cv_model$lambda.min, "\n")
+    cat("Số lượng đặc trưng được chọn:", length(selected_features) - 1, "\n")
+    
+    cat("\nConfusion Matrix:\n")
+    print(confusionMatrix(class_pred, y_test))
+    
+    roc_obj <- roc(as.numeric(as.character(y_test)), as.vector(prob_pred))
+    cat("\nAUC Value:", auc(roc_obj), "\n")
+    
+    plot(roc_obj, main = "ROC Curve - Lasso Logistic Regression", col = "blue", lwd = 2)
+    abline(a = 0, b = 1, lty = 2, col = "gray")
+}
+#----------------------------------------------------------
 # 5.4 Random forest
-#---------------------------------------------------------
+#----------------------------------------------------------
+# Sử dụng random forest để dự đoán Class dựa trên Height, Width và Local, đồng thời đánh giá tầm quan trọng của các biến
+run_random_forest <- function(data, seed = 99) {
+  cat("\n--- 5.4 Random forest ---\n")
+  set.seed(seed)
+  train_index <- createDataPartition(data$Class, p = 0.7, list = FALSE)
+  train_data <- data[train_index, ]
+  test_data  <- data[-train_index, ]
+  
+  set.seed(seed)
+  rf_model <- randomForest(
+    Class ~ ., data = train_data, ntree = 500,
+    mtry = floor(sqrt(ncol(train_data) - 1)), importance = TRUE
+  )
+  
+  rf_prob <- predict(rf_model, test_data, type = "prob")[,2]
+  rf_pred <- as.factor(ifelse(rf_prob > 0.5, "1", "0"))
+  
+  cat("\n> Confusion Matrix:\n")
+  print(confusionMatrix(rf_pred, test_data$Class))
+  
+  roc_rf <- roc(as.numeric(as.character(test_data$Class)), rf_prob)
+  cat("\n> AUC Value:", auc(roc_rf), "\n")
+  
+  plot(roc_rf, col = "red", lwd = 2, main = "ROC Curve - Random Forest")
+  varImpPlot(rf_model)
+}
 
-library(randomForest)
-
-set.seed(99)
-
-rf_model <- randomForest(
-  Class ~ ., 
-  data = train_data,
-  ntree = 500,
-  mtry = floor(sqrt(ncol(train_data) - 1)),
-  importance = TRUE
-)
-
-# dự đoán xác suất
-rf_prob <- predict(rf_model, test_data, type = "prob")[,2]
-
-# chuyển sang class
-rf_pred <- ifelse(rf_prob > 0.5, "1", "0")
-rf_pred <- as.factor(rf_pred)
-
-library(caret)
-confusionMatrix(rf_pred, test_data$Class)
-
-library(pROC)
-
-roc_rf <- roc(as.numeric(as.character(test_data$Class)), rf_prob)
-
-auc_rf <- auc(roc_rf)
-auc_rf
-
-plot(roc_rf, col = "red", lwd = 2)
-
-varImpPlot(rf_model)
-
-#---------------------------------------------------------
-# Hướng mở rộng
-#---------------------------------------------------------
-# Hàm loại outlier theo IQR
+# Hướng mở rộng: Xóa ngoại lai và chạy lại Lasso
 remove_outlier <- function(df, col) {
   Q1 <- quantile(df[[col]], 0.25, na.rm = TRUE)
   Q3 <- quantile(df[[col]], 0.75, na.rm = TRUE)
@@ -542,111 +490,92 @@ remove_outlier <- function(df, col) {
   df[df[[col]] >= lower & df[[col]] <= upper, ]
 }
 
-# copy dữ liệu
-ad_data_clean <- analysis_data
-
-# loại outlier
-ad_data_clean <- remove_outlier(ad_data_clean, "Height")
-ad_data_clean <- remove_outlier(ad_data_clean, "Width")
-
-# kiểm tra số dòng còn lại
-nrow(ad_data_clean)
-
-
-library(caret)
-
-set.seed(99)
-train_index2 <- createDataPartition(ad_data_clean$Class, p = 0.7, list = FALSE)
-
-train_data2 <- ad_data_clean[train_index2, ]
-test_data2  <- ad_data_clean[-train_index2, ]
-
-
-library(glmnet)
-
-# tạo ma trận
-x_train2 <- model.matrix(Class ~ . -1, data = train_data2)
-y_train2 <- train_data2$Class
-
-x_test2 <- model.matrix(Class ~ . -1, data = test_data2)
-y_test2 <- test_data2$Class
-
-# weight xử lý imbalance
-weights2 <- ifelse(y_train2 == "1",
-                   1 / sum(y_train2 == "1"),
-                   1 / sum(y_train2 == "0"))
-
-# train model
-set.seed(99)
-cv_model2 <- cv.glmnet(
-  x_train2,
-  y_train2,
-  family = "binomial",
-  alpha = 1,
-  weights = weights2
-)
-
-# dự đoán
-prob_pred2 <- predict(cv_model2, s = "lambda.min", newx = x_test2, type = "response")
-
-class_pred2 <- ifelse(prob_pred2 > 0.5, "1", "0")
-class_pred2 <- as.factor(class_pred2)
-
-# confusion matrix
-library(caret)
-confusionMatrix(class_pred2, y_test2)
-
-library(pROC)
-
-y_test_num2 <- as.numeric(as.character(y_test2))
-
-roc_lasso2 <- roc(y_test_num2, as.vector(prob_pred2))
-
-auc_lasso2 <- auc(roc_lasso2)
-
-auc_lasso2
-
-plot(roc_lasso2, col = "blue", main = "ROC - Lasso (No Outliers)")
-abline(a = 0, b = 1, lty = 2)
-
-
-#---------------------------------------------------------
-# Các hàm model
-#---------------------------------------------------------
-
+run_extended_model <- function(data, seed = 99) {
+  cat("\n--- Hướng mở rộng: Lasso (Đã loại bỏ ngoại lai) ---\n")
+  ad_data_clean <- remove_outlier(data, "Height")
+  ad_data_clean <- remove_outlier(ad_data_clean, "Width")
+  
+  cat("> Số dòng còn lại sau khi xóa outlier:", nrow(ad_data_clean), "\n")
+  
+  set.seed(seed)
+  train_index2 <- createDataPartition(ad_data_clean$Class, p = 0.7, list = FALSE)
+  train_data2 <- ad_data_clean[train_index2, ]
+  test_data2  <- ad_data_clean[-train_index2, ]
+  
+  x_train2 <- model.matrix(Class ~ . -1, data = train_data2)
+  y_train2 <- train_data2$Class
+  x_test2 <- model.matrix(Class ~ . -1, data = test_data2)
+  y_test2 <- test_data2$Class
+  
+  weights2 <- ifelse(y_train2 == "1",
+                     1 / sum(y_train2 == "1"),
+                     1 / sum(y_train2 == "0"))
+  
+  set.seed(seed)
+  cv_model2 <- cv.glmnet(x_train2, y_train2, family = "binomial", alpha = 1, weights = weights2)
+  
+  prob_pred2 <- predict(cv_model2, s = "lambda.min", newx = x_test2, type = "response")
+  class_pred2 <- as.factor(ifelse(prob_pred2 > 0.5, "1", "0"))
+  
+  cat("\n> Confusion Matrix:\n")
+  print(confusionMatrix(class_pred2, y_test2))
+  
+  roc_lasso2 <- roc(as.numeric(as.character(y_test2)), as.vector(prob_pred2))
+  cat("\n> AUC Value (No Outliers):", auc(roc_lasso2), "\n")
+  
+  plot(roc_lasso2, col = "blue", main = "ROC - Lasso (No Outliers)")
+  abline(a = 0, b = 1, lty = 2)
+}
 
 #---------------------------------------------------------
 # Thực thi (Main)
 #---------------------------------------------------------
-# In ra các thông tin của dataset
-# print("--- Thông tin dataset gốc ---")
-#get_data(original_data)
-#get_data(analysis_data)
+get_data(original_data)
+get_data(analysis_data)
 
-#Xử lý số liệu
-#cat("\n")
-#print("--- Xử lý số liệu ---")
+cat("\n=========================================\n")
+cat("          THỐNG KÊ MÔ TẢ DỮ LIỆU         \n")
+cat("=========================================\n")
 check_na(analysis_data)
-# draw_histograms_and_boxplots(analysis_data)
-
+draw_histograms_and_boxplots(analysis_data)
+# Tiền xử lý dữ liệu chung trước khi vẽ và chạy model
+analysis_data <- na_replace(analysis_data)
+analysis_data <- get_unique_dataset(analysis_data)
 get_data(analysis_data)
 
 # Kiểm tra và xử lý ngoại lai
 cat("\n")
-#print("--- Kiểm tra và xử lý ngoại lai ---")
-#get_all_outliers(analysis_data)
+print("--- Kiểm tra và xử lý ngoại lai ---")
+get_all_outliers(analysis_data)
 
-# cat("\n")
+cat("\n")
 print("--- Thống kê mô tả tổng quát ---")
 get_summary_stats(analysis_data)
-
-# cat("\n")
-# print("--- Trực quan hóa dữ liệu ---")
 draw_histograms_and_boxplots(original_data)
 draw_histograms_and_boxplots(analysis_data)
-
 draw_histograms(analysis_data)
 draw_boxplots(analysis_data)
 draw_barplot_local(analysis_data)
 draw_scatter(analysis_data)
 draw_correlation_matrix(analysis_data)
+
+cat("\n=========================================\n")
+cat("             THỐNG KÊ SUY DIỄN           \n")
+cat("=========================================\n")
+# Gọi các hàm thống kê suy diễn
+draw_qq_plot(analysis_data)
+perform_mean_tests(analysis_data)
+perform_proportion_test(analysis_data)
+
+cat("\n=========================================\n")
+cat("          MÔ HÌNH MACHINE LEARNING       \n")
+cat("=========================================\n")
+# Gọi các hàm Machine Learning
+run_lasso_logistic(analysis_data)
+run_random_forest(analysis_data)
+
+cat("\n=========================================\n")
+cat("                HƯỚNG MỞ RỘNG            \n")
+cat("=========================================\n")
+# Gọi hàm hướng mở rộng
+run_extended_model(analysis_data)
