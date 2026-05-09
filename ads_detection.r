@@ -357,7 +357,7 @@ draw_qq_plot <- function(data) {
         facet_wrap(~Class) + theme_minimal() +
         labs(title = "QQ Plot of Width by Class") +
         geom_text(data = shapiro_df,
-                aes(x = Inf, y = -Inf, label = paste0("Shapiro p-value = ", round(p_value, 4))),
+                aes(x = Inf, y = -Inf, label = paste0("Shapiro p-value = ", (p_value))),
                 hjust = 1.1, vjust = -0.5, inherit.aes = FALSE)
     print(p_qq)
 }
@@ -414,6 +414,7 @@ run_lasso_logistic <- function(data, seed = 99) {
     test_data  <- data[-train_index, ]
     cat("Số lượng quan sát của tập Train:", nrow(train_data), "quan sát\n")
     cat("Số lượng quan sát của tập Test:", nrow(test_data), "quan sát\n")
+    
     print(table(train_data$Class))
 
     weights <- ifelse(train_data$Class == "1",
@@ -429,9 +430,14 @@ run_lasso_logistic <- function(data, seed = 99) {
     set.seed(seed)
     cv_model <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 1, weights = weights)
     
+    cv_model$lambda.min
+    cv_model$lambda.1se
+    best_lambda <- cv_model$lambda.min
+    
     coef_lasso <- coef(cv_model, s = "lambda.min")
     coef_df <- as.matrix(coef_lasso)
     selected_features <- coef_df[coef_df != 0, , drop = FALSE]
+    print(selected_features)
     
     prob_pred <- predict(cv_model, s = "lambda.min", newx = x_test, type = "response")
     class_pred <- as.factor(ifelse(prob_pred > 0.5, "1", "0"))
@@ -439,7 +445,6 @@ run_lasso_logistic <- function(data, seed = 99) {
     cat("Lambda min:", cv_model$lambda.min, "\n")
     cat("Số lượng đặc trưng được chọn:", length(selected_features) - 1, "\n")
     
-    cat("\nConfusion Matrix:\n")
     print(confusionMatrix(class_pred, y_test))
     
     roc_obj <- roc(as.numeric(as.character(y_test)), as.vector(prob_pred))
