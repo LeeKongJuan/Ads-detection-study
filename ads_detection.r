@@ -48,7 +48,7 @@ get_data <- function(data) {
     } else {
         data_display <- data
     }
-    print(head(data_display))
+    print(head(data_display, n = 13))
     cat("\n")
 
     str(data, list.len = 10)
@@ -452,6 +452,8 @@ run_lasso_logistic <- function(data, seed = 99) {
     
     plot(roc_obj, main = "ROC Curve - Lasso Logistic Regression", col = "blue", lwd = 2)
     abline(a = 0, b = 1, lty = 2, col = "gray")
+    
+    return(as.numeric(auc(roc_obj)))
 }
 #----------------------------------------------------------
 # 5.4 Random forest
@@ -481,6 +483,8 @@ run_random_forest <- function(data, seed = 99) {
   
   plot(roc_rf, col = "red", lwd = 2, main = "ROC Curve - Random Forest")
   varImpPlot(rf_model)
+  
+  return(as.numeric(auc(roc_rf)))
 }
 
 # Hướng mở rộng: Xóa ngoại lai và chạy lại Lasso
@@ -492,45 +496,12 @@ remove_outlier <- function(df, col) {
   lower <- Q1 - 1.5 * IQR_val
   upper <- Q3 + 1.5 * IQR_val
   
-  df[df[[col]] >= lower & df[[col]] <= upper, ]
+  df_cleaned <- df[df[[col]] >= lower & df[[col]] <= upper, ]
+  cat("> Số dòng còn lại sau khi xóa outlier:", nrow(df_cleaned), "\n")
+  return(df_cleaned)
 }
 
-run_extended_model <- function(data, seed = 99) {
-  cat("\n--- Hướng mở rộng: Lasso (Đã loại bỏ ngoại lai) ---\n")
-  ad_data_clean <- remove_outlier(data, "Height")
-  ad_data_clean <- remove_outlier(ad_data_clean, "Width")
-  
-  cat("> Số dòng còn lại sau khi xóa outlier:", nrow(ad_data_clean), "\n")
-  
-  set.seed(seed)
-  train_index2 <- createDataPartition(ad_data_clean$Class, p = 0.7, list = FALSE)
-  train_data2 <- ad_data_clean[train_index2, ]
-  test_data2  <- ad_data_clean[-train_index2, ]
-  
-  x_train2 <- model.matrix(Class ~ . -1, data = train_data2)
-  y_train2 <- train_data2$Class
-  x_test2 <- model.matrix(Class ~ . -1, data = test_data2)
-  y_test2 <- test_data2$Class
-  
-  weights2 <- ifelse(y_train2 == "1",
-                     1 / sum(y_train2 == "1"),
-                     1 / sum(y_train2 == "0"))
-  
-  set.seed(seed)
-  cv_model2 <- cv.glmnet(x_train2, y_train2, family = "binomial", alpha = 1, weights = weights2)
-  
-  prob_pred2 <- predict(cv_model2, s = "lambda.min", newx = x_test2, type = "response")
-  class_pred2 <- as.factor(ifelse(prob_pred2 > 0.5, "1", "0"))
-  
-  cat("\n> Confusion Matrix:\n")
-  print(confusionMatrix(class_pred2, y_test2))
-  
-  roc_lasso2 <- roc(as.numeric(as.character(y_test2)), as.vector(prob_pred2))
-  cat("\n> AUC Value (No Outliers):", auc(roc_lasso2), "\n")
-  
-  plot(roc_lasso2, col = "blue", main = "ROC - Lasso (No Outliers)")
-  abline(a = 0, b = 1, lty = 2)
-}
+
 
 #---------------------------------------------------------
 # Thực thi (Main)
@@ -576,11 +547,20 @@ cat("\n=========================================\n")
 cat("          MÔ HÌNH MACHINE LEARNING       \n")
 cat("=========================================\n")
 # Gọi các hàm Machine Learning
-run_lasso_logistic(analysis_data)
-run_random_forest(analysis_data)
+auc_lasso_orig <- run_lasso_logistic(analysis_data)
+auc_rf_orig <- run_random_forest(analysis_data)
 
 cat("\n=========================================\n")
 cat("                HƯỚNG MỞ RỘNG            \n")
 cat("=========================================\n")
 # Gọi hàm hướng mở rộng
-run_extended_model(analysis_data)
+ad_data_clean <- remove_outlier(analysis_data, "Height")
+ad_data_clean <- remove_outlier(ad_data_clean, "Width")
+auc_lasso_clean <- run_lasso_logistic(ad_data_clean)
+auc_rf_clean <- run_random_forest(ad_data_clean)
+
+comparison_table <- data.frame(
+  Model = c("Lasso (original)", "RF (original)", "Lasso (no outlier)", "RF (no outlier)"),
+  AUC = c(auc_lasso_orig, auc_rf_orig, auc_lasso_clean, auc_rf_clean)
+)
+print(comparison_table)
